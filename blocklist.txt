@@ -1,0 +1,11 @@
+# Owner's custom blocklist for a home DNS ad blocker.
+# The blocker should regularly pull this file from the default branch (main).
+#
+# Format:
+# - One domain per line.
+# - A line starting with # is a comment and is not blocked.
+# - Each uncommented domain blocks that domain and all of its subdomains.
+#
+# No domains are blocked yet. The lines below are examples only.
+# example-ads.example
+# tracking.example.com
