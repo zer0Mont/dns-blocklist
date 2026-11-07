@@ -15,4 +15,4 @@ python3 tools/build_blocklist.py --stevenblack hosts.txt --oisd oisd.txt --hagez
 python3 -m unittest tests/test_build_blocklist.py tests/test_pi_local.py
 ```
 
-Pi-local stats collection and a daily Gravity refresh are prepared in `docs/pi-local-setup.md`. Those commands do not enable timers or contact the Pi-hole until you explicitly say to go live.
+Pi-local stats collection is prepared in `docs/pi-local-setup.md`. It does not enable a timer. Daily Gravity is deferred and is not implemented.

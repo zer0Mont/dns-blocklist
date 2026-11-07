@@ -3,6 +3,8 @@
 import json
 import os
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime
@@ -11,13 +13,12 @@ from zoneinfo import ZoneInfo
 
 from pi_local.aggregate import collect_record, extract_database_summary, synthetic_record
 from pi_local.api import PiHoleClient, TransportError
-from pi_local.cli import activation_allowed, load_config, main, read_secret_file, restore_cron
+from pi_local.cli import load_config, main, read_secret_file, resolve_config_path, _password
 from pi_local.delivery import DOCUMENTED_CONTRACT, attempt_silence, classify_http, plan_attempts
 from pi_local.disk import disk_preflight
 from pi_local.secrets import write_secret_atomic
 from pi_local.guardian import check_guardian
 from pi_local.redact import redact
-from pi_local.schedule import comment_gravity_line, gravity_command, inspect_cron
 from pi_local.urls import validate_base_url
 from pi_local.window import previous_london_day
 
@@ -178,15 +179,15 @@ class GuardianTests(unittest.TestCase):
         self.assertIn("will not create", check.messages[0])
 
     def test_updater_cannot_add_an_allow_entry(self):
-        self.assertEqual(gravity_command(), ("pihole", "updateGravity"))
         source = (ROOT / "pi_local" / "guardian.py").read_text(encoding="utf-8")
-        unit = (ROOT / "pi_local" / "units" / "pihole-daily-gravity.service").read_text(encoding="utf-8")
+        installer = (ROOT / "pi_local" / "cli.py").read_text(encoding="utf-8")
         self.assertNotIn("sqlite", source.lower())
         self.assertNotIn("POST", source)
         self.assertNotIn("DELETE", source)
-        self.assertIn("\nExecStart=/usr/bin/pihole updateGravity\n", unit)
-        self.assertNotIn("allow", unit.lower())
-        self.assertNotIn("sqlite", unit.lower())
+        self.assertNotIn("ExecStart=/usr/bin/pihole updateGravity", installer)
+        self.assertNotIn("write_text(edited", installer)
+        self.assertFalse((ROOT / "pi_local" / "units" / "pihole-daily-gravity.service").exists())
+        self.assertFalse((ROOT / "pi_local" / "units" / "pihole-daily-gravity.timer").exists())
 
 
 class SafetyTests(unittest.TestCase):
@@ -263,38 +264,85 @@ class SafetyTests(unittest.TestCase):
             self.assertFalse(any("systemctl" in line for line in commands))
             self.assertFalse((Path(tmp) / "etc" / "pihole-daily-stats" / "app-password").exists())
 
-    def test_stock_cron_can_be_disabled_and_restored_without_touching_unknown_jobs(self):
-        plan = inspect_cron(STOCK_CRON)
-        self.assertTrue(plan.can_edit_cron)
-        self.assertFalse(activation_allowed(False, plan, True))
-        self.assertFalse(activation_allowed(True, plan, False))
-        self.assertTrue(activation_allowed(True, plan, True))
-        edited = comment_gravity_line(STOCK_CRON)
-        self.assertIn("# pi-local-disabled:", edited)
-        self.assertEqual(edited.count("pihole updateGravity"), 1)
-        self.assertIn("pihole flush", edited)
-        unknown = inspect_cron(STOCK_CRON + "\n0 1 * * * root /usr/local/bin/custom-job\n")
-        self.assertFalse(unknown.can_edit_cron)
-        with self.assertRaises(ValueError):
-            comment_gravity_line(STOCK_CRON + "\n0 1 * * * root /usr/local/bin/custom-job\n")
+    def test_install_leaves_stock_cron_and_resolves_without_root(self):
         with tempfile.TemporaryDirectory() as tmp:
-            cron_path = Path(tmp) / "pihole"
-            backup = Path(tmp) / "pihole.pi-local-backup"
-            cron_path.write_text(edited, encoding="utf-8")
-            from pi_local.schedule import sha256_text
-
-            backup.write_text(
-                json.dumps(
-                    {
-                        "original_sha256": sha256_text(STOCK_CRON),
-                        "edited_sha256": sha256_text(edited),
-                        "original": STOCK_CRON,
-                    }
-                ),
+            root = Path(tmp)
+            cron = root / "etc" / "cron.d" / "pihole"
+            cron.parent.mkdir(parents=True)
+            cron.write_text(STOCK_CRON, encoding="utf-8")
+            config_dir = root / "etc" / "pihole-daily-stats"
+            config_dir.mkdir()
+            os.chmod(config_dir, 0o750)
+            preexisting = config_dir / "config.json"
+            preexisting.write_text('{"base_url":"http://127.0.0.1"}\n', encoding="utf-8")
+            os.chmod(preexisting, 0o600)
+            secret = config_dir / "app-password"
+            secret.write_text("already-created\n", encoding="utf-8")
+            os.chmod(secret, 0o600)
+            data = root / "var" / "lib" / "pihole-daily-stats" / "2026-06-14.json"
+            data.parent.mkdir(parents=True)
+            data.write_text("{}\n", encoding="utf-8")
+            self.assertEqual(main(["install", "--dest", tmp, "--confirm-install-disabled-units"]), 0)
+            self.assertEqual(cron.read_text(encoding="utf-8"), STOCK_CRON)
+            self.assertEqual(preexisting.read_text(encoding="utf-8"), '{"base_url":"http://127.0.0.1"}\n')
+            self.assertFalse((root / "etc" / "systemd" / "system" / "pihole-daily-gravity.service").exists())
+            unit = (root / "etc" / "systemd" / "system" / "pihole-daily-stats.service").read_text(encoding="utf-8")
+            self.assertIn("WorkingDirectory=/opt/pi-local\n", unit)
+            self.assertIn("Environment=PYTHONPATH=/opt/pi-local\n", unit)
+            self.assertIn("LoadCredential=config.json:/etc/pihole-daily-stats/config.json\n", unit)
+            self.assertIn("LoadCredential=pihole_app_password:/etc/pihole-daily-stats/app-password\n", unit)
+            self.assertNotIn("--config /etc/", unit)
+            self.assertNotIn("Environment=PIHOLE", unit)
+            package = root / "opt" / "pi-local"
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(package)
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
+            env.pop("CREDENTIALS_DIRECTORY", None)
+            ran = subprocess.run(
+                [sys.executable, "-c", "import pi_local,sys; sys.stdout.write(pi_local.__file__)"],
+                cwd="/tmp",
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(ran.stdout.endswith("pi_local/__init__.py"))
+            credential_dir = root / "credentials"
+            credential_dir.mkdir(mode=0o700)
+            os.chmod(credential_dir, 0o700)
+            (credential_dir / "config.json").write_text(
+                (ROOT / "pi_local" / "examples" / "pi-local.example.json").read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
-            restore_cron(cron_path, backup)
-            self.assertEqual(cron_path.read_text(encoding="utf-8"), STOCK_CRON)
+            os.chmod(credential_dir / "config.json", 0o600)
+            (credential_dir / "pihole_app_password").write_text("already-created\n", encoding="utf-8")
+            os.chmod(credential_dir / "pihole_app_password", 0o600)
+            previous = os.environ.get("CREDENTIALS_DIRECTORY")
+            os.environ["CREDENTIALS_DIRECTORY"] = str(credential_dir)
+            try:
+                loaded = load_config(resolve_config_path(None))
+                self.assertEqual(loaded["base_url"], "http://127.0.0.1")
+                self.assertEqual(loaded["password_source"], "systemd-credential")
+                self.assertEqual(_password(loaded), "already-created")
+            finally:
+                if previous is None:
+                    os.environ.pop("CREDENTIALS_DIRECTORY", None)
+                else:
+                    os.environ["CREDENTIALS_DIRECTORY"] = previous
+            self.assertEqual(main(["activate", "--go-live"]), 2)
+            self.assertEqual(cron.read_text(encoding="utf-8"), STOCK_CRON)
+            self.assertEqual(main(["uninstall", "--dest", tmp]), 0)
+            self.assertFalse((root / "opt" / "pi-local").exists())
+            self.assertFalse((root / "etc" / "systemd" / "system" / "pihole-daily-stats.service").exists())
+            self.assertEqual(preexisting.read_text(encoding="utf-8"), '{"base_url":"http://127.0.0.1"}\n')
+            self.assertEqual(secret.read_text(encoding="utf-8"), "already-created\n")
+            self.assertEqual(data.read_text(encoding="utf-8"), "{}\n")
+            self.assertEqual(cron.read_text(encoding="utf-8"), STOCK_CRON)
+            self.assertEqual(main(["uninstall", "--dest", tmp, "--remove-secrets", "--remove-data"]), 0)
+            self.assertFalse(secret.exists())
+            self.assertFalse(data.exists())
+            self.assertTrue(preexisting.exists())
+            self.assertEqual(cron.read_text(encoding="utf-8"), STOCK_CRON)
 
 
 class CoverageTests(unittest.TestCase):

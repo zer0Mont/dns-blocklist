@@ -1,9 +1,8 @@
 {
-  "base_url": "https://pi.hole.example.invalid",
+  "base_url": "http://127.0.0.1",
   "ca_file": null,
   "guardian_list_url": "https://raw.githubusercontent.com/zer0Mont/dns-blocklist/main/blocklist.txt",
-  "password_source": "file",
-  "password_file": "/etc/pihole-daily-stats/app-password",
+  "password_source": "systemd-credential",
   "output_dir": "/var/lib/pihole-daily-stats",
   "timezone": "Europe/London",
   "database_summary_until": null,
