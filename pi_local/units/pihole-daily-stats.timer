@@ -1,0 +1,12 @@
+# Installed disabled. This does not start until systemctl enable.
+[Unit]
+Description=Run the Pi-hole aggregate shortly after Europe/London midnight
+
+[Timer]
+OnCalendar=*-*-* 00:20:00 Europe/London
+Persistent=true
+AccuracySec=1min
+Unit=pihole-daily-stats.service
+
+[Install]
+WantedBy=timers.target
