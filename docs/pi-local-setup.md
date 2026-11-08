@@ -12,7 +12,7 @@ A failed, unauthorised, or schema-invalid read is `unavailable`. It is not store
 
 The database summary schema this code accepts is the one in FTL's API tests: `sum_queries`, `sum_blocked`, `percent_blocked`, and `total_clients`. `total_clients` is checked and then discarded. No other fields are copied. Uptime is not read, and it is never used to claim the day is complete. `completeness.day_coverage` stays `not-evidenced`.
 
-Whether `until` is inclusive is not known for this Pi. The instance `/api/docs` page is the authority, and no installed version was verified from here. Leave `database_summary_until` null until you have read that page and set it to `inclusive` or `exclusive`. While it is null, the collector does not send a database summary query.
+Whether `until` is inclusive is still unresolved. On the Pi that was tried, `/api/docs` did not say which bound is inclusive, and choosing `inclusive` from inference does not prove the day's edges. Do not treat totals as exact calendar-day counts until you check the source for that installed FTL version or run a controlled query on each side of local midnight. Setting `database_summary_until` only selects which integer is sent. The record keeps `until_semantics_proven` false either way. While the setting is null, the collector does not send a database summary query.
 
 `GET /api/info/version`, `GET /api/dns/blocking`, and the `gravity` object on `GET /api/stats/summary` are included only when those responses match the fields FTL's API tests assert (`version.ftl.local.version`, `blocking` of `enabled` or `disabled`, `gravity.domains_being_blocked`). Anything else stays `unavailable`. `gravity.last_update` is copied only when that field is present and numeric; the current FTL tests do not require it.
 
@@ -31,10 +31,10 @@ The stats service runs on the Pi as `DynamicUser` and talks to Pi-hole at `http:
 To store a password you already created, on the Pi:
 
 ```bash
-python3 -m pi_local provision-password --path /etc/pihole-daily-stats/app-password --store-existing-password
+sudo python3 -m pi_local provision-password --path /etc/pihole-daily-stats/app-password --store-existing-password
 ```
 
-That prompt does not echo. It refuses a pipe, a symlink, a loose mode, a surprising owner, and an existing file. The file is created mode `0600` in one step. Copy `pi_local/examples/pi-local.example.json` to `/etc/pihole-daily-stats/config.json` and keep that mode `0600` as well. The unit loads both files with `LoadCredential`; the service user never opens the root-owned directory. The unit has no `Environment=` secret. The password is not accepted on the command line or in the URL. The session id stays in memory, is removed after `DELETE /api/auth`, and redirects are not followed.
+That prompt does not echo. It refuses a pipe, a symlink, a loose mode, a surprising owner, and an existing file. The file is created mode `0600` in one step. Copy `pi_local/examples/pi-local.example.json` to `/etc/pihole-daily-stats/config.json` and keep that mode `0600` as well. The unit loads both files with `LoadCredential`. systemd then presents them under `/run/credentials/<unit>` as mode `0440`, readable by the service user and its group, not writable, and closed to everyone else. The collector accepts that mode only for a direct file in that directory. An ordinary `0440` file, a group-writable file, or a path outside `/run/credentials/<unit>` is still rejected. The service user never opens the root-owned source directory. The unit has no `Environment=` secret. The password is not accepted on the command line or in the URL. The session id stays in memory, is removed after `DELETE /api/auth`, and redirects are not followed.
 
 HTTPS certificate checks stay on for any non-loopback URL. There is no insecure or skip-verify switch.
 
@@ -56,7 +56,7 @@ python3 -m pi_local disk-check --path /var/lib
 
 `install` copies this package to `/opt/pi-local` and installs only `pihole-daily-stats.service` and `pihole-daily-stats.timer`, disabled. The service sets `WorkingDirectory=/opt/pi-local` and `PYTHONPATH=/opt/pi-local`, so `python3 -m pi_local` does not depend on the process being started in the source tree. It writes `install-manifest.json` under `/var/lib/pihole-daily-stats`. It does not enable the timer, does not create an application password, and does not replace a config or secret that is already there.
 
-`uninstall` removes only manifest files that still match what install wrote. It leaves preexisting `config.json`, the application password, and aggregate JSON in place. `--remove-secrets` deletes only `/etc/pihole-daily-stats/app-password`. `--remove-data` deletes aggregate `*.json` in the state directory. Neither flag is the default. A symlink recorded in the manifest is skipped, not followed.
+`uninstall` removes only manifest files that still match what install wrote, then deletes `install-manifest.json`. It does not remove the `/var/lib/pihole-daily-stats` directory, even when that directory is left empty. It removes `/opt/pi-local` only when the package directories are empty after those files are gone. It leaves `/etc/pihole-daily-stats`, `config.json`, the application password, and aggregate JSON in place. `--remove-secrets` deletes only `/etc/pihole-daily-stats/app-password`. `--remove-data` deletes aggregate `*.json` in the state directory and still leaves the directory. Neither flag is the default. A symlink recorded in the manifest is skipped, not followed.
 
 ## Schedulers
 
@@ -80,21 +80,24 @@ python3 -m pi_local disk-check --path /var/lib
 
 Do not run these until you say the Pi may be changed.
 
+Copy the pinned revision named in this review onto the Pi. Do not commit `config.json` or `app-password`. Writing `/opt`, `/etc`, and systemd units needs root. `daemon-reload` is required after the unit files are copied, and it does not enable the timer.
+
 ```bash
 # On the Pi, after you have approved any application-password change
 # and config.json plus app-password exist, mode 0600.
-python3 -m pi_local preflight --config /etc/pihole-daily-stats/config.json
-python3 -m pi_local install --dest / --confirm-install-disabled-units
-sudo systemctl enable --now pihole-daily-stats.timer
+sudo python3 -m pi_local preflight --config /etc/pihole-daily-stats/config.json
+sudo python3 -m pi_local install --dest / --confirm-install-disabled-units
+sudo systemctl daemon-reload
+sudo systemctl start pihole-daily-stats.service
 ```
 
-`python3 -m pi_local activate` does not do that enable for you.
+`systemctl start` runs one collection. It does not enable `pihole-daily-stats.timer`. Leave the timer disabled until a separate approval. `python3 -m pi_local activate` does not start or enable anything, and this repository's tests do not perform that start.
 
-Rollback is stats-only. It does not restore or edit Pi-hole's cron, and it keeps secrets and collected JSON unless you add the matching flag:
+Rollback is stats-only and also needs root. It does not edit Pi-hole's cron, and it keeps secrets and collected JSON unless you add the matching flag:
 
 ```bash
 sudo systemctl disable --now pihole-daily-stats.timer
-python3 -m pi_local uninstall --dest /
+sudo python3 -m pi_local uninstall --dest /
 ```
 
 Merging a blocklist change on GitHub is still a separate approval. There is no auto-merge. The weekly Gravity cron is unchanged by this package.

@@ -50,7 +50,13 @@ class CivilWindow:
             "api_until_if_inclusive": self.api_until_if_inclusive,
             "api_until_if_exclusive": self.api_until_if_exclusive,
             "until_semantics": semantics if semantics in UNTIL_SEMANTICS else "unverified",
-            "until_authority": "instance /api/docs",
+            "until_semantics_proven": False,
+            "until_note": (
+                "An inclusive or exclusive choice is not proof of this Pi-hole's "
+                "from/until rule. Confirm it from that installed version's source "
+                "or a controlled midnight-boundary query before trusting exact day "
+                "totals. Inclusive does not by itself avoid double-counting."
+            ),
         }
 
 

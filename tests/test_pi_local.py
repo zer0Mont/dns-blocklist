@@ -16,7 +16,7 @@ from pi_local.api import PiHoleClient, TransportError
 from pi_local.cli import load_config, main, read_secret_file, resolve_config_path, _password
 from pi_local.delivery import DOCUMENTED_CONTRACT, attempt_silence, classify_http, plan_attempts
 from pi_local.disk import disk_preflight
-from pi_local.secrets import write_secret_atomic
+from pi_local.secrets import CredentialFacts, validate_credential_facts, write_secret_atomic
 from pi_local.guardian import check_guardian
 from pi_local.redact import redact
 from pi_local.urls import validate_base_url
@@ -46,6 +46,9 @@ class WindowTests(unittest.TestCase):
             self.assertIsNone(window.api_until(None))
             described = window.as_dict()
             self.assertEqual(described["until_semantics"], "unverified")
+            self.assertFalse(described["until_semantics_proven"])
+            self.assertFalse(window.as_dict("inclusive")["until_semantics_proven"])
+            self.assertIn("does not by itself avoid double-counting", described["until_note"])
             self.assertEqual(described["label"], "previous-europe-london-calendar-day")
             self.assertNotIn("rolling", described["label"])
         late = previous_london_day(datetime(2026, 6, 15, 23, 59, tzinfo=LONDON))
@@ -323,7 +326,8 @@ class SafetyTests(unittest.TestCase):
                 loaded = load_config(resolve_config_path(None))
                 self.assertEqual(loaded["base_url"], "http://127.0.0.1")
                 self.assertEqual(loaded["password_source"], "systemd-credential")
-                self.assertEqual(_password(loaded), "already-created")
+                with self.assertRaises(PermissionError):
+                    _password(loaded)
             finally:
                 if previous is None:
                     os.environ.pop("CREDENTIALS_DIRECTORY", None)
@@ -343,6 +347,74 @@ class SafetyTests(unittest.TestCase):
             self.assertFalse(data.exists())
             self.assertTrue(preexisting.exists())
             self.assertEqual(cron.read_text(encoding="utf-8"), STOCK_CRON)
+
+
+class CredentialModeTests(unittest.TestCase):
+    def _facts(self, mode: int, uid: int, directory: str, name: str = "config.json", symlink: bool = False) -> CredentialFacts:
+        folder = Path(directory)
+        return CredentialFacts(
+            requested_name=name,
+            directory_resolved=folder,
+            file_resolved=folder / name,
+            mode=mode,
+            uid=uid,
+            is_symlink=symlink,
+            is_reg=not symlink,
+            directory_is_symlink=False,
+        )
+
+    def test_systemd_0440_config_and_password_are_accepted(self):
+        euid = 250
+        for name in ("config.json", "pihole_app_password"):
+            validate_credential_facts(
+                self._facts(0o440, euid, "/run/credentials/pihole-daily-stats.service", name),
+                euid=euid,
+            )
+        validate_credential_facts(
+            self._facts(0o400, 0, "/run/credentials/pihole-daily-stats.service", "pihole_app_password"),
+            euid=250,
+        )
+
+    def test_group_write_other_access_escape_and_ordinary_0440_are_rejected(self):
+        good_dir = "/run/credentials/pihole-daily-stats.service"
+        for mode in (0o460, 0o420, 0o444, 0o640, 0o664, 0o666):
+            with self.assertRaises(PermissionError):
+                validate_credential_facts(self._facts(mode, 1, good_dir), euid=1)
+        with self.assertRaises(PermissionError):
+            validate_credential_facts(self._facts(0o440, 9, good_dir), euid=1)
+        with self.assertRaises(PermissionError):
+            validate_credential_facts(
+                self._facts(0o440, 1, "/run/credentials/unit/extra"),
+                euid=1,
+            )
+        with self.assertRaises(PermissionError):
+            validate_credential_facts(self._facts(0o440, 1, "/tmp/credentials/unit"), euid=1)
+        escaped = self._facts(0o440, 1, good_dir, name="nested/secret")
+        with self.assertRaises(PermissionError):
+            validate_credential_facts(escaped, euid=1)
+        with self.assertRaises(PermissionError):
+            validate_credential_facts(self._facts(0o440, 1, good_dir, symlink=True), euid=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            ordinary = Path(tmp) / "app-password"
+            ordinary.write_text("secret\n", encoding="utf-8")
+            os.chmod(ordinary, 0o440)
+            with self.assertRaises(PermissionError):
+                read_secret_file(ordinary)
+            outside = Path(tmp) / "pihole_app_password"
+            outside.write_text("secret\n", encoding="utf-8")
+            os.chmod(outside, 0o440)
+            previous = os.environ.get("CREDENTIALS_DIRECTORY")
+            os.environ["CREDENTIALS_DIRECTORY"] = tmp
+            try:
+                from pi_local.secrets import read_systemd_credential
+
+                with self.assertRaises(PermissionError):
+                    read_systemd_credential("pihole_app_password")
+            finally:
+                if previous is None:
+                    os.environ.pop("CREDENTIALS_DIRECTORY", None)
+                else:
+                    os.environ["CREDENTIALS_DIRECTORY"] = previous
 
 
 class CoverageTests(unittest.TestCase):

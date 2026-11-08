@@ -17,7 +17,7 @@ from pi_local.delivery import attempt_silence
 from pi_local.disk import disk_preflight
 from pi_local.guardian import check_guardian, parse_lists
 from pi_local.schedule import stock_gravity_lines
-from pi_local.secrets import read_secret_file, write_secret_atomic
+from pi_local.secrets import read_secret_file, read_systemd_credential, write_secret_atomic
 
 HELP = """\
 Pi-local Pi-hole prep (review only).
@@ -205,13 +205,18 @@ def resolve_config_path(explicit: str | None) -> Path:
     return Path(directory) / "config.json"
 
 
+def load_credential_config() -> dict:
+    data = json.loads(read_systemd_credential("config.json"))
+    if not isinstance(data, dict):
+        raise ValueError("config must be a JSON object")
+    _reject_secret_keys(data)
+    return data
+
+
 def _password(config: dict) -> str:
     source = config.get("password_source", "systemd-credential")
     if source == "systemd-credential":
-        directory = os.environ.get("CREDENTIALS_DIRECTORY")
-        if not directory:
-            raise ValueError("CREDENTIALS_DIRECTORY is not set")
-        return read_secret_file(Path(directory) / "pihole_app_password")
+        return read_systemd_credential("pihole_app_password")
     if source == "file":
         path = config.get("password_file")
         if not isinstance(path, str):
@@ -262,7 +267,9 @@ def _install(dest: str | None, confirmed: bool) -> int:
         _place_file(root, str(relative), unit.read_text(encoding="utf-8"), 0o644, manifest)
     note = (
         "The stats service reads config.json and app-password only through\n"
-        "systemd LoadCredential. Keep both mode 0600 and root-owned.\n"
+        "systemd LoadCredential. Source files stay mode 0600. The copies\n"
+        "systemd shows the service are mode 0440 and are accepted only\n"
+        "inside /run/credentials/<unit>.\n"
         "Do not put the password in the unit or on a command line.\n"
         "Copy examples/pi-local.example.json to config.json if you have not.\n"
         "This install does not enable the timer and does not edit cron.\n"
@@ -351,9 +358,9 @@ def _activate(args) -> int:
 
 def _collect(config_path: str | None) -> int:
     try:
-        config = load_config(resolve_config_path(config_path))
-    except ValueError as exc:
-        print(str(exc), file=sys.stderr)
+        config = load_config(Path(config_path)) if config_path else load_credential_config()
+    except (ValueError, PermissionError, json.JSONDecodeError) as exc:
+        print(exc.__class__.__name__, file=sys.stderr)
         return 2
     password = _password(config)
     now = datetime.now(ZoneInfo(config.get("timezone", "Europe/London")))
