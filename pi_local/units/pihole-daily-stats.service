@@ -1,0 +1,23 @@
+# Installed disabled. Enable only with an explicit later go-live.
+# DynamicUser cannot read root-owned /etc. systemd (as root) copies the
+# credential files into $CREDENTIALS_DIRECTORY for this process only.
+[Unit]
+Description=Record the previous Europe/London Pi-hole aggregate
+Documentation=file:/opt/pi-local/pi_local/units/pihole-daily-stats.service
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+WorkingDirectory=/opt/pi-local
+Environment=PYTHONPATH=/opt/pi-local
+StateDirectory=pihole-daily-stats
+StateDirectoryMode=0700
+LoadCredential=config.json:/etc/pihole-daily-stats/config.json
+LoadCredential=pihole_app_password:/etc/pihole-daily-stats/app-password
+ExecStart=/usr/bin/python3 -m pi_local collect
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/pihole-daily-stats

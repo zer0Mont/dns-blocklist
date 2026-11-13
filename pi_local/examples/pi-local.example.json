@@ -1,0 +1,19 @@
+{
+  "base_url": "http://127.0.0.1",
+  "ca_file": null,
+  "guardian_list_url": "https://raw.githubusercontent.com/zer0Mont/dns-blocklist/main/blocklist.txt",
+  "password_source": "systemd-credential",
+  "output_dir": "/var/lib/pihole-daily-stats",
+  "timezone": "Europe/London",
+  "database_summary_until": null,
+  "minimum_free_bytes": 268435456,
+  "delivery": {
+    "enabled": false,
+    "prepare_only": true,
+    "contract_approved": false,
+    "contract": null,
+    "url": "https://webhook.example.invalid/routine",
+    "key_file": "/etc/pihole-daily-stats/webhook-key",
+    "allow_synthetic": false
+  }
+}

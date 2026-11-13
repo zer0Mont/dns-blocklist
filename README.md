@@ -12,5 +12,7 @@ Rebuild from local snapshots, then run the tests:
 
 ```
 python3 tools/build_blocklist.py --stevenblack hosts.txt --oisd oisd.txt --hagezi hagezi.txt --output blocklist.txt
-python3 -m unittest tests/test_build_blocklist.py
+python3 -m unittest tests/test_build_blocklist.py tests/test_pi_local.py
 ```
+
+Pi-local stats collection is prepared in `docs/pi-local-setup.md`. It does not enable a timer. Daily Gravity is deferred and is not implemented.
